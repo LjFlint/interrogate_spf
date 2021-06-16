@@ -1,17 +1,80 @@
 #!/usr/bin/env python3
 
 import argparse 
-import dns.resolver
+import dns.resolver, dns.reversename
 import netaddr 
 import json
+from typing import Tuple
 
 resolver = dns.resolver
 
+def extract_qualifier(f: str) -> Tuple[str,str] : 
+    if f.startswith('-'):
+        return "Fail", f[1:]
+    elif f.startswith('~'):
+        return "SoftFail", f[1:]
+    elif f.startswith("?"):
+       return  "Neutral", f[1:]
+    elif f.startswith("+"):
+        return "Pass", f[1:]
+    else:
+        return "Pass", f
+
+def process_mech_all(m: dict, domain: str) -> dict:
+    return {"value": "all"}
+
+def process_mech_ip4(m: dict, domain: str) -> dict:
+    net = netaddr.IPNetwork(m["value"])
+    return {"network_size": net.size, "network": str(net)}
+
+def process_mech_ip6(m: dict, domain: str) -> dict:
+    net = netaddr.IPNetwork(m["value"])
+    return{"network_size": net.size,"network": str(net)}
+
+def process_mech_a(m: dict, domain: str) -> list:
+    value = m["value"] or domain
+    prefix = m["prefix"] or ""
+    return query_a(value)
+
+def process_mech_mx(m: dict, domain: str) -> dict:
+    value = m["value"] or domain
+    prefix = m["prefix"] or ""
+    return query_mx(value)
+
+def process_mech_ptr(m: dict, domain: str) -> dict:
+    return m
+
+def process_mech_exists(m: dict, domain: str) -> dict:
+    return m
+
+def process_mech_include(m: dict, domain: str)-> dict:
+    return process_domain(m["value"])
+
+
+def process_mech_exp(m: dict, domain: str) -> dict:
+    return m
+
+def process_mech_redirect(m: dict, domain: str) -> dict:
+    return m
+
+mechanism_map = {
+     "all": process_mech_all, 
+     "ip4": process_mech_ip4, 
+     "ip6": process_mech_ip6,
+     "a": process_mech_a,
+     "mx": process_mech_mx,
+     "ptr": process_mech_ptr,
+     "exists": process_mech_exists,
+     "include": process_mech_include,
+     "exp": process_mech_exp, 
+     "redirect": process_mech_redirect
+}
+
 def parse_args():
-    parser = argparse.ArgumentParser(description='grabs the domain or file from the user.')
+    parser = argparse.ArgumentParser(description='grabs the domain or file from the user.')#grabs the arguements from the user
     parser.add_argument(
-        '-f',
-        '--file',
+        '-f',#adds f as an arguement
+        '--file',#adds file as an arguement
         dest = 'file')
     parser.add_argument(
         '-d',
@@ -39,7 +102,7 @@ def query_spf(domain: str) -> str:
     if not q:
         return ""
     for txtd in q.rrset:
-        if 'v=spf1' == txtd.strings[0].decode('utf-8').split()[0]:
+        if txtd.strings[0].decode('utf-8').split()[0] == 'v=spf1':
             return txtd.strings[0].decode('utf-8')
 
     return ""
@@ -62,17 +125,12 @@ def query_a(domain: str) -> list:
     return [netaddr.IPAddress(record.address) for record in q.rrset]
 
 
-def parse_mech_a(s: str):
-    pass
-
-def parse_mech_mx(s: str):
-    pass
-
-def parse_mech_ptr(s: str):
-    pass
-
-def parse_mech_include(s: str):
-    pass
+def query_ptr(ipaddr: str) -> str:
+    n = dns.reversename.from_address(ipaddr)
+    q = query(n, 'ptr')
+    if not q:
+        return ""
+    return q.rrset[0].target.to_unicode()
 
 
 def parse_spf(spf: str):
@@ -80,22 +138,30 @@ def parse_spf(spf: str):
     this function will parse out the spf records to each mechinism 
     """
     fields = spf.split()
-    for f in fields:
-        i = f.split(':')
-        if len(i) == 1:
-            if i[0][0] in ["-", '~', '?']:
-                continue
-            elif i[0][0] == '+':
-                #explicit mechanism pass
-                pass
-            else:
-                #this implicit mechnism pass
-                pass    
-    return fields
-   
+    results = []
+    for f in fields[1:]:
+        r = {"original": f}
+        r["qualifier"], f = extract_qualifier(f)
+        r["mechanism"] = f.split('/')[0].split(':')[0]
+        r["prefix"] = f.split('/')[1] if '/' in f else ""
+        r["value"] = f.split(':', 1)[1] if ':' in f else ""
+        results.append(r)
+    return results
+
+
 def process_domain(domain:str )-> dict:
-    result = {}
-    result["spf"] = query_spf(domain)
+    result = {"spf": query_spf(domain)}
+    if not result["spf"]:
+        return
+    parsed_fields = parse_spf(result["spf"])
+    for f in parsed_fields:
+        result[f["original"]] = {"qualifier": f["qualifier"]} 
+        r = mechanism_map[f["mechanism"]](f, domain)
+        if isinstance(r, dict):
+            for k,v in r.items():
+                result[f["original"]][k] = v
+        else:
+            result[""]
 
     return result
     
