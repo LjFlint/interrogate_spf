@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-import argparse 
+import argparse
+from dns.inet import inet_pton 
 import dns.resolver, dns.reversename
 import netaddr 
 import json
@@ -215,7 +216,24 @@ def summarize_networks(d: dict) -> dict:
     Determine total unique count of addresses for the whole dict e.g. 
         unique_size = IPSet(networks).size
     """
-    pass
+    out = {}
+    networksip6 = [
+        netaddr.IPNetwork(d) for domain in d if domain["mechanism"] == "ip6"
+    ]
+    networksip4 = [
+        netaddr.IPNetwork(d) for domain in d if domain["mechanism"] == "ip4"
+    ]
+    sizeip4 = sum(n.size for n in networksip4)
+    uniquesizeip4 = netaddr.IPSet(networksip4).size
+    uniquesizeip6 = netaddr.IPSet(networksip6).size
+    sizeip6 = sum(n.size for n in networksip6)
+    out = {
+        "ip4 size":sizeip4,
+        "unique ip4 size":uniquesizeip4,
+        "ip6 size":sizeip6,
+        "unique ip6 size":uniquesizeip6
+    }
+    return out
 
 def process_domain(domain:str )-> dict:
     """
