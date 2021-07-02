@@ -122,16 +122,13 @@ def parse_args():
         '--output',
         dest = 'output'
     )
-   
     return parser.parse_args()
     
-
 def read_file(filename: str) -> list:
     """deals with a file, reading it and returning a list of domains"""
     with open(filename, "r") as f:
         domains = f.readlines()
     return [d.strip() for d in domains]
-
 
 def query(domain: str, record: str):
     """calls resolver.resolve to actually query the domain"""
@@ -139,7 +136,6 @@ def query(domain: str, record: str):
         return resolver.resolve(domain,record)
     except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,dns.resolver.NXDOMAIN):
         return None
-
 
 def query_spf(domain: str) -> str:
     """
@@ -154,7 +150,6 @@ def query_spf(domain: str) -> str:
 
     return ""
 
-
 def query_mx(domain: str) -> dict:
     """
         this function handles the mx mechanism, it takes in a string containg the mx record and returns a dictionary containing the results of query_a on the mx records
@@ -167,7 +162,6 @@ def query_mx(domain: str) -> dict:
             "records": query_a(mx.exchange), 
         } for mx in q.rrset}
 
-
 def query_a(domain: str) -> list:
     """
         this function queries the a record, it takes in a string containing the a record and returns a list of address 
@@ -177,14 +171,12 @@ def query_a(domain: str) -> list:
         return []
     return [str(netaddr.IPAddress(record.address)) for record in q.rrset]
 
-
 def query_ptr(ipaddr: str) -> str:
     n = dns.reversename.from_address(ipaddr)
     q = query(n, 'ptr')
     if not q:
         return ""
     return q.rrset[0].target.to_unicode()
-
 
 def parse_spf(spf: str):
     """
@@ -205,6 +197,20 @@ def parse_spf(spf: str):
         results.append(r)
     return results
 
+def extract_networks(d:dict) -> Tuple[list,list]:
+    """
+    """
+    ip4 = []
+    ip6 = []
+    for k, v in d.items():
+        if isinstance(v, dict) and "network" in v:
+            n = netaddr.IPNetwork(v["network"])
+            if n.version == 4:
+                ip4.append(n)
+            elif n.version == 6:
+                ip6.append(n)
+    return ip4,ip6
+                
 def summarize_networks(d: dict) -> dict:
     """
     Take a dict containing networks as input
@@ -216,25 +222,22 @@ def summarize_networks(d: dict) -> dict:
     Determine total unique count of addresses for the whole dict e.g. 
         unique_size = IPSet(networks).size
     """
-    out = {}
-    networksip6 = [
-        netaddr.IPNetwork(d) for domain in d if domain["mechanism"] == "ip6"
-    ]
-    networksip4 = [
-        netaddr.IPNetwork(d) for domain in d if domain["mechanism"] == "ip4"
-    ]
-    sizeip4 = sum(n.size for n in networksip4)
-    uniquesizeip4 = netaddr.IPSet(networksip4).size
-    uniquesizeip6 = netaddr.IPSet(networksip6).size
-    sizeip6 = sum(n.size for n in networksip6)
-    out = {
-        "ip4 size":sizeip4,
-        "unique ip4 size":uniquesizeip4,
-        "ip6 size":sizeip6,
-        "unique ip6 size":uniquesizeip6
+    ip4 = []
+    ip6 = []
+    for k, v in d.items():
+         if isinstance(v, dict):
+            if "mechanism" in v and v["mechanism"] == "include":
+                summarize_networks(v) #todo: fix recursion
+            i4,i6 = extract_networks(v)
+            ip4.extend(i4)
+            ip6.extend(i6)
+    return {
+        "ip4_size": sum(n.size for n in ip4),
+        "unique_ip4_size": netaddr.IPSet(ip4).size,
+        "ip6_size": sum(n.size for n in ip6),
+        "unique_ip6_size": netaddr.IPSet(ip6).size
     }
-    return out
-
+    
 def process_domain(domain:str )-> dict:
     """
     this method takes in a domain as a string, grabs the strings spf record if it has one, sets its qualifier has it parse to the correct mechanism functions then it has some
@@ -245,13 +248,18 @@ def process_domain(domain:str )-> dict:
         return
     parsed_fields = parse_spf(result["spf"])
     for f in parsed_fields:
-        result[str(f["original"])] = {"qualifier": f["qualifier"]} 
-        handler = mechanism_map.get(f["mechanism"], process_unknown_mechanism)#does handler have a .size?
-        r = handler(f, domain)
-        result["summary"] = summarize_networks(r)
+        result[str(f["original"])] = {
+            "qualifier": f["qualifier"],
+            "mechanism": f["mechanism"]
+        } 
+        handler = mechanism_map.get(f["mechanism"], process_unknown_mechanism)
+        r = handler(f, domain)         
         if isinstance(r, dict):
             for k,v in r.items():
                 result[f["original"]][str(k)] = v
+    summary = summarize_networks(result)
+    if summary:
+        result["summary"] = summary
     return result
     
 def main():
@@ -263,15 +271,11 @@ def main():
     else:
         raise SystemExit("please supply -f or -d")
     results = {d: process_domain(d) for d in domains}
-    if args.output:
-        out_file = open("output.json", 'w')
+    if args.output:    
         with open(args.output, 'w') as out_file:
-             json.dump(results,out_file, indent = 4  )
-        out_file.close()
+             json.dump(results,out_file, indent = 4)
     else:
         print(json.dumps(results, indent=4))
 
-
 if __name__ == "__main__":
     main()
-
